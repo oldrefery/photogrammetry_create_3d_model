@@ -1,0 +1,46 @@
+# Exclude standard files and folders not needed in the Docker container
+
+# Exclude Python virtual environments
+venv/
+.env/
+*.pyc
+__pycache__/
+
+# Exclude configuration files for IDEs and editors
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Exclude version control system files
+.git/
+.gitignore
+
+# Exclude log and temporary files
+*.log
+*.tmp
+*.swp
+
+# Exclude data files if they are not required
+data/
+datasets/
+*.csv
+*.h5
+*.json
+
+# Exclude OS-specific files
+.DS_Store
+Thumbs.db
+
+# Exclude documentation files if they are not needed in the container
+README.md
+LICENSE
+
+# Exclude all compiled binary files
+*.o
+*.out
+*.exe
+
+# Exclude build output files
+build/
+dist/

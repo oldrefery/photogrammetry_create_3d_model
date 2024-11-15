@@ -419,6 +419,9 @@ def create_3d_model(image_dir, output_dir, clean=False):
         # 3. Sparse reconstruction
         if "sparse_reconstruction" not in completed_steps and os.path.exists(database_path):
             print("3. Sparse reconstruction")
+            print(f"Available memory: {psutil.virtual_memory().available / (1024 * 1024)} MB")
+            print(f"Available CPUs: {psutil.cpu_count(logical=False)} physical cores")
+            os.makedirs(sparse_dir, exist_ok=True)
             total_time += run_cmd([
                 "colmap", "mapper",
                 "--database_path", database_path,
@@ -470,6 +473,7 @@ def get_image_files(directory):
 def preprocess_images(image_dir, target_size=1600):
     """Resize and standardize images."""
     import cv2
+    import glob
 
     print("\nPreprocessing images...")
     image_files = get_image_files(image_dir)
