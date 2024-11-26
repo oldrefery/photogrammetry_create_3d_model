@@ -1,4 +1,5 @@
-# Images should be located in folder 'images' in the root of the project
+# Images should be located 
+in folder ```images``` in the root of the project
 
 # Create docker image:
 ```
