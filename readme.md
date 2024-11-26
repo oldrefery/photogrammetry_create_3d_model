@@ -1,3 +1,5 @@
+# Images should be located in folder 'images' in the root of the project
+
 # Create docker image:
 ```
 docker build -t 3d-scanner .
