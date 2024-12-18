@@ -43,8 +43,12 @@ RUN git clone https://github.com/cdcseacave/openMVS.git && \
     mkdir openMVS_build && cd openMVS_build && \
     cmake ../openMVS -DCMAKE_BUILD_TYPE=Release \
                      -DVCG_DIR=/usr/local/include/vcglib \
-                     -DCMAKE_PREFIX_PATH=/usr/include/opencv4 && \
-    make -j2 && \
+                     -DCMAKE_PREFIX_PATH=/usr/include/opencv4 \
+                     -DUSE_OPENMP=ON \
+                     -DOPEN_MP_MAX_THREADS=4 \
+                     -DBUILD_SHARED_LIBS=OFF \
+                     -DMAX_RAM_MB=16384 && \
+                 make -j2 && \
     make install && \
     rm -rf /app/openMVS /app/openMVS_build
 
@@ -59,6 +63,11 @@ COPY . /app
 
 # Set permissions for application files
 RUN chmod -R 755 /app
+
+# Setting environment variables for memory management
+ENV OPENMVS_MAX_MEMORY=16384
+ENV OMP_NUM_THREADS=4
+ENV MKL_NUM_THREADS=4
 
 # Specify the command to run the application
 CMD ["python3", "/app/src/create_3d_model.py", "--clean"]

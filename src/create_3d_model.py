@@ -1,6 +1,6 @@
 # create_3d_model.py
 DECREASE_IMAGE_QUALITY = True
-TARGET_SIZE_DECREASE = 800 #800
+TARGET_SIZE_DECREASE = 800
 
 import os
 import subprocess
@@ -61,20 +61,31 @@ def run_cmd(cmd, desc=None, check_db=True):
         print(f"\n{desc}...")
     print(f"Running: {' '.join(cmd)}")
 
-    if check_db and '--database_path' in cmd:
-        database_path = cmd[cmd.index('--database_path') + 1]
-        if not check_database(database_path):
-            raise RuntimeError("Database is corrupted, please clean and restart")
-
     start_time = time.time()
     try:
-        process = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        if process.stdout:
-            print(process.stdout)
-        if process.stderr:
-            print(process.stderr)
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+            bufsize=1
+        )
+        
+        # Для обработки вывода в реальном времени
+        while True:
+            output = process.stdout.readline()
+            if output == '' and process.poll() is not None:
+                break
+            if output:
+                # Очищаем текущую строку и выводим новую информацию
+                print(f"\r{output.strip()}", end='')
+        
+        # Получаем код возврата
+        if process.returncode != 0:
+            raise subprocess.CalledProcessError(process.returncode, cmd)
+
     except subprocess.CalledProcessError as e:
-        print(f"Command failed with error code {e.returncode}")
+        print(f"\nCommand failed with error code {e.returncode}")
         if e.output:
             print(f"Output: {e.output}")
         if e.stderr:
@@ -82,8 +93,36 @@ def run_cmd(cmd, desc=None, check_db=True):
         raise
 
     elapsed = time.time() - start_time
-    print(f"Completed in: {format_time(elapsed)}")
+    print(f"\nCompleted in: {format_time(elapsed)}")
     return elapsed
+
+
+def process_feature_extractor_output(output):
+    """Обработка вывода feature_extractor"""
+    from tqdm import tqdm
+    
+    lines = output.split('\n')
+    total_files = None
+    pbar = None
+    resolution_shown = False
+    
+    for line in lines:
+        if "Processed file" in line:
+            if not total_files:
+                total_files = int(line.split('/')[1].split(']')[0])
+                pbar = tqdm(total=total_files, desc="Extracting features")
+            pbar.update(1)
+            
+            # Показываем разрешение только для первого файла
+            if not resolution_shown and "Dimensions:" in line:
+                dimensions = line.strip().split("Dimensions:")[1].strip()
+                tqdm.write(f"Image dimensions: {dimensions}")
+                resolution_shown = True
+                
+        elif "Elapsed time" in line:
+            if pbar:
+                pbar.close()
+            print(line)
 
 
 def filter_points_by_distance(dense_mvs, max_distance=0.5):
@@ -102,6 +141,8 @@ def filter_points_by_distance(dense_mvs, max_distance=0.5):
 
             # Находим блок с точками
             while f.tell() < file_size:
+                print(f"\rProcessing points... {f.tell()/file_size*100:.1f}%", end='')
+
                 chunk_type = struct.unpack('I', f.read(4))[0]
                 chunk_size = struct.unpack('Q', f.read(8))[0]
 
@@ -129,13 +170,13 @@ def filter_points_by_distance(dense_mvs, max_distance=0.5):
 
                     # Заменяем оригинальный файл
                     Path(filtered_mvs).rename(dense_mvs)
-                    print(f"\rFiltered out {len(points) - len(filtered_points)} distant points")
+                    print(f"\rFiltered {len(points) - len(filtered_points)} distant points")
                     break
                 else:
                     f.seek(chunk_size, 1)  # пропускаем неизвестный блок
 
     except Exception as e:
-        print(f"Warning: Could not filter points: {e}")
+        print(f"\nWarning: Could not filter points: {e}")
 
 
 def save_progress(output_dir, step, with_timestamp=True):
@@ -259,6 +300,8 @@ def create_mesh(project_dir):
     """Creates a textured mesh from COLMAP results using OpenMVS."""
     print("\n=== Starting mesh creation with OpenMVS ===")
     mesh_start_time = time.time()
+    total_steps = 5  # Общее количество шагов
+    current_step = 0
 
     output_dir = os.path.join(project_dir, "output")
     colmap_dir = os.path.join(output_dir, "sparse", "0")
@@ -271,6 +314,11 @@ def create_mesh(project_dir):
     completed_steps = get_completed_steps(output_dir)
 
     try:
+        for step in ["convert_to_mvs", "dense_reconstruction", "mesh_reconstruction", 
+            "mesh_refinement", "texturing"]:
+            current_step += 1
+            print(f"\r[{current_step}/{total_steps}] Processing {step}...", end='')
+
         # 1. Scene Setup - Convert COLMAP to OpenMVS
         if "convert_to_mvs" not in completed_steps:
             print("\nStep 1: Setting up scene - Converting COLMAP to OpenMVS")
@@ -324,16 +372,23 @@ def create_mesh(project_dir):
         # 4. Mesh Refinement
         if "mesh_refinement" not in completed_steps and os.path.exists(mesh_mvs):
             print("\nStep 4: Refining mesh")
-            run_cmd([
-                "/usr/local/bin/OpenMVS/RefineMesh",
-                "--input-file", mesh_mvs,
-                "--output-file", refined_mvs,
-                "--resolution-level", "1",
-                "--scales", "2",
-                "--scale-step", "0.8",
-                "--max-face-area", "32"
-            ], "Refining mesh")
+        try:
+            refine_mesh_in_chunks(mesh_mvs, refined_mvs)
             save_progress(output_dir, "mesh_refinement")
+        except Exception as e:
+            print(f"\nError during mesh refinement: {str(e)}")
+            # If it was not successful to process in parts, copy the original mesh
+            shutil.copy2(mesh_mvs, refined_mvs)
+                    # run_cmd([
+            #     "/usr/local/bin/OpenMVS/RefineMesh",
+            #     "--input-file", mesh_mvs,
+            #     "--output-file", refined_mvs,
+            #     "--resolution-level", "1",
+            #     "--scales", "1",    
+            #     "--scale-step", "0.8",
+            #     "--max-face-area", "32" 
+            # ], "Refining mesh")
+            # save_progress(output_dir, "mesh_refinement")
 
         # 5. Texturing
         if "texturing" not in completed_steps:
@@ -346,8 +401,8 @@ def create_mesh(project_dir):
                 "/usr/local/bin/OpenMVS/TextureMesh",
                 "--input-file", refined_mvs,
                 "--output-file", textured_model,
-                "--export-type", "glb",
-                "--texture-size", "8192",
+                "--export-type", "obj", #"glb",
+                "--texture-size", "2048", #"4096",   # was "8192",
                 "--outlier-threshold", "0.1"
             ], "Applying texture")
             save_progress(output_dir, "texturing")
@@ -359,7 +414,7 @@ def create_mesh(project_dir):
         print(f"Error executing OpenMVS command: {str(e)}")
         raise
     except Exception as e:
-        print(f"Unexpected error during mesh creation: {str(e)}")
+        print(f"\nError during mesh creation: {str(e)}")
         raise
 
 
@@ -492,51 +547,152 @@ def get_image_files(directory):
 
 
 def preprocess_images(image_dir, target_size=1600):
-    """Resize and standardize images."""
-    import cv2
-    import os
+   """Resize and standardize images."""
+   import cv2
+   import os
+   from tqdm import tqdm
+   
+   processed_dir = os.path.join(os.path.dirname(image_dir), "output", "processed_images")
+   os.makedirs(processed_dir, exist_ok=True)
+   
+   image_files = get_image_files(image_dir)
+   processed_paths = []
+
+   if not image_files:
+       return None
+
+   # Get the dimensions of the first image to output the information
+   sample_img = cv2.imread(image_files[0])
+   if sample_img is not None:
+       height, width = sample_img.shape[:2]
+       scale = min(target_size / width, target_size / height)
+       new_width = int(width * scale)
+       new_height = int(height * scale)
+       print(f"Images will be resized from {width}x{height} to {new_width}x{new_height}")
+
+   for img_path in tqdm(image_files, desc="Processing images", unit="img"):
+       try:
+           img = cv2.imread(img_path)
+           if img is None:
+               continue
+               
+           height, width = img.shape[:2]
+           scale = min(target_size / width, target_size / height)
+           new_width = int(width * scale)
+           new_height = int(height * scale)
+           
+           img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_AREA)
+           filename = os.path.basename(img_path)
+           output_path = os.path.join(processed_dir, filename)
+           
+           if cv2.imwrite(output_path, img):
+               processed_paths.append(output_path)
+               
+       except Exception as e:
+           tqdm.write(f"Error processing {img_path}: {str(e)}")
+           
+   return processed_dir if processed_paths else None
+
+
+def refine_mesh_in_chunks(mesh_mvs, refined_mvs, chunk_size=1000000):
+    """Split the mesh into parts and process them individually"""
+    import open3d as o3d
+    import numpy as np
+    import tempfile
+    from pathlib import Path
     
-    # Create processed directory inside output
-    processed_dir = os.path.join(os.path.dirname(image_dir), "output", "processed_images")
-    print(f"Creating directory: {processed_dir}")
-    os.makedirs(processed_dir, exist_ok=True)
+    print("\nSplitting mesh into chunks for processing...")
     
-    image_files = get_image_files(image_dir)
-    print(f"Found {len(image_files)} images in {image_dir}")
-    processed_paths = []
+    # Загружаем меш
+    mesh = o3d.io.read_triangle_mesh(mesh_mvs)
+    vertices = np.asarray(mesh.vertices)
+    triangles = np.asarray(mesh.triangles)
     
-    print("\nPreprocessing images...")
-    for img_path in image_files:
-        print(f"\nProcessing: {img_path}")
-        try:
-            img = cv2.imread(img_path)
-            if img is None:
-                print(f"Warning: Could not read image {img_path}")
-                continue
+    # Define axis margins
+    x_min, x_max = vertices[:, 0].min(), vertices[:, 0].max()
+    y_min, y_max = vertices[:, 1].min(), vertices[:, 1].max()
+    z_min, z_max = vertices[:, 2].min(), vertices[:, 2].max()
+    
+    # Split into subspaces
+    x_chunks = 2  
+    y_chunks = 2  
+    x_ranges = np.linspace(x_min, x_max, x_chunks + 1)
+    y_ranges = np.linspace(y_min, y_max, y_chunks + 1)
+    
+    temp_dir = tempfile.mkdtemp(prefix="mesh_chunks_")
+    refined_parts = []
+    
+    try:
+        # Process every chunk
+        chunk_count = 0
+        for i in range(len(x_ranges) - 1):
+            for j in range(len(y_ranges) - 1):
+                chunk_count += 1
+                print(f"\nProcessing chunk {chunk_count} of {x_chunks * y_chunks}")
                 
-            height, width = img.shape[:2]
-            scale = min(target_size / width, target_size / height)
-            new_width = int(width * scale)
-            new_height = int(height * scale)
-            
-            print(f"\rResizing from {width}x{height} to {new_width}x{new_height}")
-            img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_AREA)
-            
-            filename = os.path.basename(img_path)
-            output_path = os.path.join(processed_dir, filename)
-            print(f"\rSaving to: {output_path}")
-            
-            if cv2.imwrite(output_path, img):
-                print(f"\rSuccessfully saved {filename}")
-                processed_paths.append(output_path)
-            else:
-                print(f"Failed to save {filename}. Check permissions and disk space.")
+                # Select vertices in the current range
+                mask = (vertices[:, 0] >= x_ranges[i]) & (vertices[:, 0] < x_ranges[i + 1]) & \
+                       (vertices[:, 1] >= y_ranges[j]) & (vertices[:, 1] < y_ranges[j + 1])
                 
-        except Exception as e:
-            print(f"Error processing {img_path}: {str(e)}")
-            
-    print(f"\nTotal processed: {len(processed_paths)} images")        
-    return processed_dir if processed_paths else None
+                # Adding a little overlap
+                overlap = 0.1  # 10% overlap
+                overlap_x = (x_max - x_min) * overlap
+                overlap_y = (y_max - y_min) * overlap
+                
+                extended_mask = (vertices[:, 0] >= x_ranges[i] - overlap_x) & \
+                              (vertices[:, 0] < x_ranges[i + 1] + overlap_x) & \
+                              (vertices[:, 1] >= y_ranges[j] - overlap_y) & \
+                              (vertices[:, 1] < y_ranges[j + 1] + overlap_y)
+                
+                chunk_vertices = vertices[extended_mask]
+                
+                # Skip empty chunks
+                if len(chunk_vertices) == 0:
+                    continue
+                
+                # Create temporary files for the chunk
+                chunk_file = os.path.join(temp_dir, f"chunk_{i}_{j}.mvs")
+                refined_chunk = os.path.join(temp_dir, f"refined_chunk_{i}_{j}.mvs")
+                
+                # Save chunk 
+                chunk_mesh = o3d.geometry.TriangleMesh()
+                chunk_mesh.vertices = o3d.utility.Vector3dVector(chunk_vertices)
+                o3d.io.write_triangle_mesh(chunk_file, chunk_mesh)
+                
+                try:
+                    # Process chunk
+                    run_cmd([
+                        "/usr/local/bin/OpenMVS/RefineMesh",
+                        "--input-file", chunk_file,
+                        "--output-file", refined_chunk,
+                        "--resolution-level", "1",
+                        "--scales", "1",
+                        "--scale-step", "0.8",
+                        "--max-face-area", "32"
+                    ], f"Refining chunk {chunk_count}")
+                    
+                    # Load processed chunk
+                    refined_part = o3d.io.read_triangle_mesh(refined_chunk)
+                    refined_parts.append(refined_part)
+                    
+                except Exception as e:
+                    print(f"Error processing chunk {chunk_count}: {str(e)}")
+                    continue
+        
+        # Merge all chunks
+        print("\nMerging refined chunks...")
+        final_mesh = o3d.geometry.TriangleMesh()
+        for part in refined_parts:
+            final_mesh += part
+        
+        # Save result
+        print("Saving final refined mesh...")
+        o3d.io.write_triangle_mesh(refined_mvs, final_mesh)
+        
+    finally:
+        # Clean temp files
+        import shutil
+        shutil.rmtree(temp_dir)
 
 
 if __name__ == "__main__":
