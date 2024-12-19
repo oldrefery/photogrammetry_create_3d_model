@@ -1,4 +1,4 @@
-# create_3d_model.py
+# src/create_3d_model.py
 DECREASE_IMAGE_QUALITY = True
 TARGET_SIZE_DECREASE = 800 #800
 
@@ -298,7 +298,7 @@ def create_mesh(project_dir):
                 "--resolution-level", "1",
                 "--number-views", "3",
                 "--min-resolution", "640",
-                "--max-resolution", "3200"
+                "--max-resolution", "1600", # was"3200"
             ], "Creating dense point cloud")
             # Filter points after cloud creation
             if os.path.exists(dense_mvs):
